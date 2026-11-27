@@ -1,108 +1,65 @@
-w,oh));
-                    const w=Math.max(2,Math.round(ow*k)), h=Math.max(2,Math.round(oh*k));
-                    const cv=document.createElement('canvas'); cv.width=w; cv.height=h;
-                    const cx=cv.getContext('2d',{colorSpace:'srgb',alpha:false,imageSmoothingQuality:'high'});
-                    cx.imageSmoothingEnabled=true; cx.imageSmoothingQuality='high';
-                    cx.fillStyle='#000'; cx.fillRect(0,0,w,h);
-                    cx.drawImage(img,0,0,w,h);
-                    const t=new THREE.CanvasTexture(cv);
-                    t.colorSpace=THREE.SRGBColorSpace;
-                    t.magFilter=THREE.LinearFilter;
-                    t.minFilter=THREE.LinearMipmapLinearFilter;
-                    t.generateMipmaps=true;
-                    t.anisotropy=Math.min(8, renderer&&renderer.capabilities?renderer.capabilities.getMaxAnisotropy():1);
-                    t.needsUpdate=true;
-                    addPhotoToScene(t,id,{width:w,height:h});
-                }catch(e){
-                    console.warn('photo bake failed, fallback to raw texture',e);
-                    const t=new THREE.Texture(img); t.colorSpace=THREE.SRGBColorSpace; t.needsUpdate=true; addPhotoToScene(t,id,img);
-                }
-            };
-            img.onerror=()=>console.warn('photo decode failed',id);
-            img.src=b;
-        }
-        function addPhotoToScene(t,id,imgObj){
-            const aspect=imgObj.width/imgObj.height; let w=1.2,h=1.2; if(aspect>1)h=w/aspect; else w=h*aspect;
-            const fg=new THREE.BoxGeometry(w+0.2,h+0.2,0.05); const fm=new THREE.MeshStandardMaterial({color:0xbfa06a,metalness:0.35,roughness:0.6,envMapIntensity:0.35,toneMapped:true}); const f=new THREE.Mesh(fg,fm); const pg=new THREE.PlaneGeometry(w,h); const pm=new THREE.MeshBasicMaterial({map:t,toneMapped:false}); pm.color.setRGB(0.85,0.85,0.85); const p=new THREE.Mesh(pg,pm); p.position.z=0.04; const g=new THREE.Group(); g.add(f); g.add(p); const s=0.8; g.scale.set(s,s,s); photoMeshGroup.add(g); const pt=new Particle(g,'PHOTO',false); pt.photoId=id; pt.texture=t; particleSystem.push(pt);
-        }
-        window.applyParticleSettings=()=>{const ph=particleSystem.filter(p=>p.type==='PHOTO');const tr=[];mainGroup.children.forEach(c=>{if(c!==photoMeshGroup)tr.push(c)});tr.forEach(c=>mainGroup.remove(c));particleSystem=[...ph];CONFIG.particles.count=parseInt(document.getElementById('slider-tree').value);CONFIG.particles.dustCount=parseInt(document.getElementById('slider-dust').value);createParticles();createDust();createSnow();};
-
-        // ---------- 摄像头 / 手势：带可见状态与重试 ----------
-        let CAM_STATE = 'idle', camStream = null, camStarting = false;
-
-        function camHint() {
-            switch (CAM_STATE) {
-                case 'live': return STATE.hand.detected ? ' · 手势识别中' : ' · 等待手势（20-30cm）';
-                case 'requesting': return ' · 摄像头连接中…';
-                case 'denied': return ' · 摄像头权限被拒：点『重试』';
-                case 'busy': return ' · 摄像头被其他页面占用：关掉后用『重试』';
-                case 'no-device': return ' · 没找到摄像头';
-                case 'ended': return ' · 摄像头已断开：点『重试』';
-                case 'error': return ' · 摄像头异常：点『重试』';
-                default: return '';
-            }
+: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", delegate: delegate }, runningMode: "VIDEO", numHands: 1 });
+                try { handLandmarker = await HandLandmarker.createFromOptions(v, opts("GPU")); }
+                catch (errGPU) { console.warn('GPU delegate failed, retry CPU', errGPU); handLandmarker = await HandLandmarker.createFromOptions(v, opts("CPU")); }
+                predictWebcam();
+            } catch (e) { console.warn('hand model failed', e); }
         }
 
-        function setCamState(state, detail) {
-            CAM_STATE = state;
-            window.CAM_STATE = state;
-            const dot = document.getElementById('cam-status');
-            if (dot) {
-                dot.classList.toggle('active', state === 'live');
-                const c = state === 'live' ? '#00ff00' : (state === 'requesting' ? '#ffcc00' : '#ff3333');
-                dot.style.background = c;
-                dot.style.boxShadow = '0 0 6px ' + c;
-            }
-            const names = { idle: '摄像头未启动', requesting: '摄像头连接中…', live: '摄像头已连接', denied: '权限被拒',
-                            busy: '被其他页面占用', 'no-device': '未找到摄像头', ended: '摄像头已断开', error: '摄像头异常' };
-            const msg = document.getElementById('cam-msg');
-            if (msg) msg.innerText = detail ? ((names[state] || state) + '：' + detail) : (names[state] || state);
-            const btn = document.getElementById('cam-retry');
-            if (btn) btn.classList.toggle('show', state !== 'live' && state !== 'requesting');
-            refreshHint();
-        }
+        (function bindCamRetry() {
+            const b = document.getElementById('cam-retry');
+            if (b) b.addEventListener('click', () => { if (handLandmarker) startCamera(); else initMediaPipe(); });
+        })();
 
-        async function startCamera() {
-            if (camStarting) return false;
-            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { setCamState('no-device'); return false; }
-            camStarting = true;
-            try {
-                if (camStream) { camStream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} }); camStream = null; }
-                setCamState('requesting');
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
-                    audio: false
-                });
-                camStream = stream;
-                videoElement = document.getElementById('webcam-video');
-                videoElement.srcObject = stream;
-                await videoElement.play().catch(() => {});
-                renderWebcamPreview();
-                const track = stream.getVideoTracks()[0];
-                if (track) track.addEventListener('ended', () => setCamState('ended'));
-                setCamState('live');
-                return true;
-            } catch (e) {
-                const n = (e && e.name) || '';
-                if (n === 'NotAllowedError' || n === 'SecurityError' || n === 'PermissionDeniedError') {
-                    setCamState('denied', '在地址栏摄像头图标里允许');
-                } else if (n === 'NotReadableError' || n === 'TrackStartError' || n === 'AbortError') {
-                    setCamState('busy', '关掉其他占用摄像头的标签页');
-                    setTimeout(() => { if (CAM_STATE === 'busy') startCamera(); }, 4000);
-                } else if (n === 'NotFoundError' || n === 'DevicesNotFoundError' || n === 'OverconstrainedError') {
-                    setCamState('no-device');
-                } else {
-                    setCamState('error', n || String(e));
-                }
-                console.warn('camera unavailable', e);
-                return false;
-            } finally {
-                camStarting = false;
-            }
-        }
+        window.addEventListener('pagehide', () => {
+            if (camStream) camStream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} });
+        });
+        function renderWebcamPreview(){const c=document.getElementById('webcam-canvas'),x=c.getContext('2d',{willReadFrequently:true});function d(){if(videoElement.readyState>=2)x.drawImage(videoElement,0,0,c.width,c.height);requestAnimationFrame(d)}d()}
+        let lvt=-1,lastDetect=0;async function predictWebcam(){if(videoElement&&handLandmarker&&videoElement.readyState>=2&&videoElement.currentTime!==lvt){const now=performance.now();if(now-lastDetect>=(IS_MOBILE?70:33)){lastDetect=now;lvt=videoElement.currentTime;try{const r=handLandmarker.detectForVideo(videoElement,now);processGestures(r);refreshHint();document.getElementById('cam-status').classList.toggle('active',r.landmarks.length>0);}catch(e){console.warn(e);}}}requestAnimationFrame(predictWebcam);}
+        function processGestures(r){if(r.landmarks&&r.landmarks.length>0){STATE.hand.detected=true;const lm=r.landmarks[0];STATE.hand.x=(lm[9].x-0.5)*2;STATE.hand.y=(lm[9].y-0.5)*2;const thumb=lm[4],index=lm[8],wrist=lm[0],middle=lm[12];const pd=Math.hypot(thumb.x-index.x,thumb.y-index.y);const od=Math.hypot(middle.x-wrist.x,middle.y-wrist.y);if(STATE.mode==='FOCUS'){if(pd>0.1)setMode('SCATTER');return;}if(pd<0.05&&STATE.mode!=='FOCUS')triggerPhotoGrab();else if(od>0.4)setMode('SCATTER');else if(od<0.2)setMode('TREE');}else STATE.hand.detected=false;}
 
-        async function initMediaPipe() {
-            await startCamera();
-            try {
-                const v = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
-                const opts = (delegate) => ({ baseOptions: { modelAssetPath
+        window.setupEvents=()=>{
+            window.addEventListener('resize',()=>{camera.aspect=window.innerWidth/window.innerHeight;camera.updateProjectionMatrix();renderer.setSize(window.innerWidth,window.innerHeight);composer.setSize(window.innerWidth,window.innerHeight)});
+            document.getElementById('file-input').addEventListener('change',e=>{Array.from(e.target.files).forEach(f=>{const r=new FileReader();r.onload=ev=>{const i=new Image();i.src=ev.target.result;i.onload=()=>{const id=savePhotoToDB(ev.target.result);createPhotoTexture(ev.target.result,id)}};r.readAsDataURL(f)})});
+            document.getElementById('music-input').addEventListener('change',e=>{const f=e.target.files[0];if(f){saveMusicToDB(f);bgmAudio.src=URL.createObjectURL(f);bgmAudio.play().then(()=>{isMusicPlaying=true;updatePlayBtnUI(true)}).catch(console.error)}});
+            
+            // 键盘交互
+window.addEventListener('keydown', (e) => {
+                if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+                const code = e.code;
+                const k = e.key.toLowerCase();
+                
+                if (k === 'h') window.toggleUI();
+                if (code === 'Space') { e.preventDefault(); setMode('TREE'); }
+                if (k === 'z') setMode('SCATTER');
+                if (k === 'x') triggerPhotoGrab();
+
+                if (code === 'ArrowUp') manualRotateState.x = -1;
+                if (code === 'ArrowDown') manualRotateState.x = 1;
+                if (code === 'ArrowLeft') manualRotateState.y = -1;
+                if (code === 'ArrowRight') manualRotateState.y = 1;
+            });
+            window.addEventListener('keyup', (e) => {
+                const code = e.code;
+                if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(code)) manualRotateState = { x: 0, y: 0 };
+            });
+        }
+        window.openDeleteManager=async()=>{document.getElementById('delete-manager').classList.remove('hidden');const g=document.getElementById('photo-grid');g.innerHTML='';const ps=await loadPhotosFromDB();if(!ps||ps.length===0)g.innerHTML='<div style="color:#888;">暂无照片</div>';else ps.forEach(p=>{const d=document.createElement('div');d.className='photo-item';const i=document.createElement('img');i.className='photo-thumb';i.src=p.data;const b=document.createElement('div');b.className='delete-x';b.innerText='X';b.onclick=e=>{e.stopPropagation();confirmDelete(p.id,d)};d.appendChild(i);d.appendChild(b);g.appendChild(d)})}
+        window.confirmDelete=(id,el)=>{deletePhotoFromDB(id);el.remove();const p=particleSystem.find(pa=>pa.photoId===id);if(p){photoMeshGroup.remove(p.mesh);particleSystem.splice(particleSystem.indexOf(p),1)}}
+        window.clearAllPhotos=()=>{if(confirm("确定要清空所有照片吗？")){clearPhotosDB();particleSystem.filter(p=>p.type==='PHOTO').forEach(p=>photoMeshGroup.remove(p.mesh));particleSystem=particleSystem.filter(p=>p.type!=='PHOTO');window.openDeleteManager()}}
+        window.closeDeleteManager=()=>{document.getElementById('delete-manager').classList.add('hidden')}
+
+        function animate() {
+            requestAnimationFrame(animate); const dt=Math.min(clock.getDelta(),0.05); const et=clock.getElapsedTime();
+            if(snowInstancedMesh&&STATE.mode==='TREE'){
+                snowInstancedMesh.visible=true;
+                for(let i=0;i<CONFIG.snow.count;i++){
+                    snowInstancedMesh.getMatrixAt(i,snowDummy.matrix);snowDummy.matrix.decompose(snowDummy.position,snowDummy.quaternion,snowDummy.scale);const d=snowData[i];
+                    snowDummy.position.y-=d.vy*CONFIG.snow.speed*dt;snowDummy.position.x+=Math.sin(et*0.5+i)*2.5*dt;snowDummy.position.z+=Math.cos(et*0.3+i)*1.5*dt;
+                    snowDummy.rotation.x+=d.rx*dt;snowDummy.rotation.y+=d.ry*dt;snowDummy.rotation.z+=d.rz*dt;
+                    if(snowDummy.position.y<-25){snowDummy.position.y=40;snowDummy.position.x=(Math.random()-0.5)*CONFIG.snow.range;snowDummy.position.z=(Math.random()-0.5)*CONFIG.snow.range;}
+                    snowDummy.updateMatrix();snowInstancedMesh.setMatrixAt(i,snowDummy.matrix);
+                } snowInstancedMesh.instanceMatrix.needsUpdate=true;
+            } else if(snowInstancedMesh)snowInstancedMesh.visible=false;
+
+            // Updated Rotation Logic
+if(manualRotateState.x!==0||manualRotateState.y!==0){const s=CONFIG.interaction.rotationSpeed*2.
